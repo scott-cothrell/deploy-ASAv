@@ -1,0 +1,586 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy into existing infrastructure - Copyright 2018 Cisco Systems Inc.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC Configuration
+        Parameters:
+          - VpcName
+          - KeyName
+      - Label:
+          default: Cisco ASA Settings
+        Parameters:
+          - AsaVersion
+          - AsaLicType
+          - AsaInstanceType
+          - AsaHostname
+          - MgmtSubnetId
+          - MgmtIp
+          - InsideSubnetId
+          - InsideIp
+          - OutsideSubnetId
+          - OutsideIp
+          - MgmtExternalAccessCidr
+      - Label:
+          default: 'DMZ Interface Settings (NOTES: Only supported for Xlarge instances; Due to an AWS requirement, a valid subnet must be identified as the DMZ subnet, even if a DMZ is not being deployed)'
+        Parameters:
+          - AddDMZInterface
+          - DmzSubnetId
+          - DmzIp
+    ParameterLabels:
+      KeyName:
+        default: Key name
+      AsaVersion:
+        default: ASA Version
+      AsaLicType:
+        default: ASA License Type
+      AsaInstanceType:
+        default: ASA Instance type
+      AsaHostname:
+        default: Hostname of the ASA
+      MgmtSubnetId:
+        default: Subnet of management interface
+      MgmtIp:
+        default: Management interface IP address
+      InsideSubnetId:
+        default: Subnet of inside interface
+      InsideIp:
+        default: Inside interface IP address
+      OutsideSubnetId:
+        default: Subnet of outside interface
+      OutsideIp:
+        default: Outside interface IP address
+      DmzSubnetId:
+        default: Subnet of DMZ interface
+      DmzIp:
+        default: DMZ interface IP address
+      AddDMZInterface:
+        default: Configure DMZ port on ASA
+      MgmtExternalAccessCidr:
+        default: External management access CIDR
+Parameters:
+  VpcName:
+    Description: Provide an existing VPC here
+    Type: AWS::EC2::VPC::Id
+  MgmtSubnetId:
+    Description: Provide an existing subnet here
+    Type: AWS::EC2::Subnet::Id
+  MgmtIp:
+    Description: Optionally provide an IP for the management interface
+    Type: String
+    Default: 0.0.0.0
+    AllowedPattern: ^((25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)$
+  InsideSubnetId:
+    Description: Provide an existing subnet here
+    Type: AWS::EC2::Subnet::Id
+  InsideIp:
+    Description: Optionally provide an IP for the inside interface
+    Type: String
+    Default: 0.0.0.0
+    AllowedPattern: ^((25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)$
+  OutsideSubnetId:
+    Description: Provide an existing subnet here
+    Type: AWS::EC2::Subnet::Id
+  OutsideIp:
+    Description: Optionally provide an IP for the outside interface
+    Type: String
+    Default: 0.0.0.0
+    AllowedPattern: ^((25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)$
+  AddDMZInterface:
+    Description: Whether or not to add a DMZ interface to ASA
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  DmzSubnetId:
+    Description: Provide an existing, valid subnet here - AWS requires a valid subnet id in this field, which is ignored if the above field is "false"
+    Type: AWS::EC2::Subnet::Id
+  DmzIp:
+    Description: Optionally provide an IP for the DMZ interface
+    Type: String
+    Default: 0.0.0.0
+    AllowedPattern: ^((25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)$
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to ASA
+    Type: AWS::EC2::KeyPair::KeyName
+  AsaVersion:
+# Version v9.6.4-3 selection has been removed because it is not supported on the AWS m4 series and will fail
+#   silently into an endless boot cycle if that instance type is specified.
+    Description: Cisco ASAv Version
+    Type: String
+    Default: v9.9.1-2
+    AllowedValues:
+      - v9.8.2-20
+      - v9.9.1-2
+#      - v9.6.4-3
+  AsaLicType:
+    Description: Cisco ASAv License Type
+    Type: String
+    Default: BYOL
+    AllowedValues:
+      - BYOL
+      - HOURLY
+  AsaInstanceType:
+    Description: Cisco ASAv EC2 instance type, m4.xlarge is supported only for ASA
+      Version 9.8.2.15 and above
+    Type: String
+    Default: c4.xlarge
+    AllowedValues:
+      - c4.large
+      - c4.xlarge
+      - m4.xlarge
+  AsaHostname:
+    Description: Hostname of the ASA
+    Type: String
+    Default: ciscoasa
+  MgmtExternalAccessCidr:
+    Description: 'CAUTION: by default, the management port is world addressable. You
+      should change this to your address or CIDR block. Additional CIDRs may be manually
+      added post-deployment'
+    Type: String
+    AllowedPattern: ^((25[0-5]|2[0-4][0-9]|[1]?[0-9][0-9]?)(\.|\/)){4}([0-9]|[1-2][0-9]|3[0-2])$
+    Default: 0.0.0.0/0
+Conditions:
+  SupportsDmz: !And
+    - !Or
+      - !Equals
+        - !Ref 'AsaInstanceType'
+        - c4.xlarge
+      - !Equals
+        - !Ref 'AsaInstanceType'
+        - m4.xlarge
+    - !Equals
+      - !Ref 'AddDMZInterface'
+      - 'true'
+  NoDmz: !Or
+    - !Equals
+      - !Ref 'AddDMZInterface'
+      - 'false'
+    - !Equals
+      - !Ref 'AsaInstanceType'
+      - c4.large
+  IsGovCloud: !Equals
+    - !Ref 'AWS::Region'
+    - us-gov-west-1
+  UseStaticMgmtIp: !Not
+    - !Equals
+      - 0.0.0.0
+      - !Ref 'MgmtIp'
+  UseStaticInsideIp: !Not
+    - !Equals
+      - 0.0.0.0
+      - !Ref 'InsideIp'
+  UseStaticOutsideIp: !Not
+    - !Equals
+      - 0.0.0.0
+      - !Ref 'OutsideIp'
+  UseStaticDmzIp: !Not
+    - !Equals
+      - 0.0.0.0
+      - !Ref 'DmzIp'
+Mappings:
+  KeynameMap:
+    v9.9.1-2:
+      BYOL: BYOLv9912
+      HOURLY: HOURLYv9912
+    v9.8.2-20:
+      BYOL: BYOLv98220
+      HOURLY: HOURLYv98220
+    v9.6.4-3:
+      BYOL: BYOLv9643
+      HOURLY: HOURLYv9643
+  AWSAMIRegionMap:
+    AMI:
+      BYOLv9912: Cisco-ASAv-9.9.1-2-6836725a-4399-455a-bf58-01255e5213b8-ami-9f0e0ee5.4
+      HOURLYv9912: Cisco-ASAv-9.9.1-2-87868dac-850c-4c36-ba33-ff3d39a724ac-ami-9f0e0ee5.4
+      BYOLv98220: Cisco-ASAv-9.8.2-20-6836725a-4399-455a-bf58-01255e5213b8-ami-5004042a.4
+      HOURLYv98220: Cisco-ASAv-9.8.2-20-87868dac-850c-4c36-ba33-ff3d39a724ac-ami-5004042a.4
+      BYOLv9643: Cisco-ASAv-9.6.4-3-6836725a-4399-455a-bf58-01255e5213b8-ami-727e7e08.4
+      HOURLYv9643: Cisco-ASAv-9.6.4-3-87868dac-850c-4c36-ba33-ff3d39a724ac-ami-727e7e08.4
+    ap-south-1:
+      BYOLv9912: ami-19217376
+      HOURLYv9912: ami-952476fa
+      BYOLv98220: ami-b88ad9d7
+      HOURLYv98220: ami-cc89daa3
+      BYOLv9643: ami-cab3e0a5
+      HOURLYv9643: ami-008fdc6f
+    eu-west-3:
+      BYOLv9912: ''
+      HOURLYv9912: ''
+      BYOLv98220: ''
+      HOURLYv98220: ''
+      BYOLv9643: ''
+      HOURLYv9643: ''
+    eu-west-2:
+      BYOLv9912: ami-06e90c61
+      HOURLYv9912: ami-46ea0f21
+      BYOLv98220: ami-45a34622
+      HOURLYv98220: ami-ada144ca
+      BYOLv9643: ami-00a34667
+      HOURLYv9643: ami-a2a346c5
+    eu-west-1:
+      BYOLv9912: ami-6a483c13
+      HOURLYv9912: ami-5f413526
+      BYOLv98220: ami-8c6f06f5
+      HOURLYv98220: ami-3471184d
+      BYOLv9643: ami-b6741dcf
+      HOURLYv9643: ami-08701971
+    ap-northeast-2:
+      BYOLv9912: ami-26882a48
+      HOURLYv9912: ami-d48527ba
+      BYOLv98220: ami-e1cd6f8f
+      HOURLYv98220: ami-e0cd6f8e
+      BYOLv9643: ami-d2cf6dbc
+      HOURLYv9643: ami-c1cd6faf
+    ap-northeast-1:
+      BYOLv9912: ami-abf081cd
+      HOURLYv9912: ami-bbf584dd
+      BYOLv98220: ami-2c11664a
+      HOURLYv98220: ami-a31e69c5
+      BYOLv9643: ami-ec00778a
+      HOURLYv9643: ami-e3007785
+    sa-east-1:
+      BYOLv9912: ami-5a703e36
+      HOURLYv9912: ami-f7703e9b
+      BYOLv98220: ami-67f5ba0b
+      HOURLYv98220: ami-c9f3bca5
+      BYOLv9643: ami-f10d439d
+      HOURLYv9643: ami-2b0c4247
+    ca-central-1:
+      BYOLv9912: ami-904ecaf4
+      HOURLYv9912: ami-194fcb7d
+      BYOLv98220: ami-959e1af1
+      HOURLYv98220: ami-6d911509
+      BYOLv9643: ami-7991151d
+      HOURLYv9643: ami-9f9e1afb
+    ap-southeast-1:
+      BYOLv9912: ami-8787c7fb
+      HOURLYv9912: ami-9486c6e8
+      BYOLv98220: ami-bede98c2
+      HOURLYv98220: ami-84df99f8
+      BYOLv9643: ami-fde1a781
+      HOURLYv9643: ami-49e1a735
+    ap-southeast-2:
+      BYOLv9912: ami-cc9e64ae
+      HOURLYv9912: ami-c99963ab
+      BYOLv98220: ami-24847f46
+      HOURLYv98220: ami-eafb0088
+      BYOLv9643: ami-ebf30889
+      HOURLYv9643: ami-15fd0677
+    eu-central-1:
+      BYOLv9912: ami-3c7d1a53
+      HOURLYv9912: ami-8b7f18e4
+      BYOLv98220: ami-8bddb8e4
+      HOURLYv98220: ami-65ddb80a
+      BYOLv9643: ami-49214526
+      HOURLYv9643: ami-da2145b5
+    us-east-1:
+      BYOLv9912: ami-195f4b63
+      HOURLYv9912: ami-7a5d4900
+      BYOLv98220: ami-c22b24b8
+      HOURLYv98220: ami-8f2827f5
+      BYOLv9643: ami-2ce8e756
+      HOURLYv9643: ami-2eeae554
+    us-east-2:
+      BYOLv9912: ami-3847735d
+      HOURLYv9912: ami-6c447009
+      BYOLv98220: ami-7faa9f1a
+      HOURLYv98220: ami-d9a89dbc
+      BYOLv9643: ami-a097a2c5
+      HOURLYv9643: ami-5694a133
+    us-west-1:
+      BYOLv9912: ami-d4343ab4
+      HOURLYv9912: ami-13353b73
+      BYOLv98220: ami-1c858a7c
+      HOURLYv98220: ami-22848b42
+      BYOLv9643: ami-fa818e9a
+      HOURLYv9643: ami-b59f90d5
+    us-west-2:
+      BYOLv9912: ami-9144c2e9
+      HOURLYv9912: ami-0245c37a
+      BYOLv98220: ami-b4f571cc
+      HOURLYv98220: ami-b6f773ce
+      BYOLv9643: ami-d19612a9
+      HOURLYv9643: ami-10951168
+    us-gov-west-1:
+      BYOLv9912: ami-4a46ce2b
+      HOURLYv9912: ami-8447cfe5
+      BYOLv98220: ami-ec45cd8d
+      HOURLYv98220: ami-8b47cfea
+      BYOLv9643: ami-6947cf08
+      HOURLYv9643: ami-0347cf62
+Resources:
+  eipASAMgmt:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: !Ref 'VpcName'
+  eipaASAMgmt:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt 'eipASAMgmt.AllocationId'
+      NetworkInterfaceId: !Ref 'eniASAMgmt'
+  eniASAMgmt:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref 'MgmtSubnetId'
+      PrivateIpAddress: !If
+        - UseStaticMgmtIp
+        - !Ref 'MgmtIp'
+        - !Ref 'AWS::NoValue'
+      Description: Interface for management traffic of ASA
+      GroupSet:
+        - !Ref 'sgMgmtInterface'
+      SourceDestCheck: 'false'
+  eniASAInside:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref 'InsideSubnetId'
+      PrivateIpAddress: !If
+        - UseStaticInsideIp
+        - !Ref 'InsideIp'
+        - !Ref 'AWS::NoValue'
+      Description: Interface for inside traffic of ASA
+      GroupSet:
+        - !Ref 'sgAllowAll'
+      SourceDestCheck: 'false'
+  eniASAOutside:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref 'OutsideSubnetId'
+      PrivateIpAddress: !If
+        - UseStaticOutsideIp
+        - !Ref 'OutsideIp'
+        - !Ref 'AWS::NoValue'
+      Description: Interface for outside traffic of ASA
+      GroupSet:
+        - !Ref 'sgAllowAll'
+      SourceDestCheck: 'false'
+  eniASADmz:
+    Condition: SupportsDmz
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref 'DmzSubnetId'
+      PrivateIpAddress: !If
+        - UseStaticDmzIp
+        - !Ref 'DmzIp'
+        - !Ref 'AWS::NoValue'
+      Description: Interface for DMZ traffic of ASA
+      GroupSet:
+        - !Ref 'sgAllowAll'
+      SourceDestCheck: 'false'
+  CiscoASA:
+    Condition: SupportsDmz
+    Type: AWS::EC2::Instance
+    Properties:
+      DisableApiTermination: 'false'
+      InstanceInitiatedShutdownBehavior: stop
+      ImageId: !FindInMap
+        - AWSAMIRegionMap
+        - !Ref 'AWS::Region'
+        - !FindInMap
+          - KeynameMap
+          - !Ref 'AsaVersion'
+          - !Ref 'AsaLicType'
+      InstanceType: !Ref 'AsaInstanceType'
+      KeyName: !Ref 'KeyName'
+      Monitoring: 'false'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref 'AWS::StackName'
+              - -asav
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - Description: Management interface
+          DeviceIndex: 0
+          NetworkInterfaceId: !Ref 'eniASAMgmt'
+        - Description: Inside network interface
+          DeviceIndex: 1
+          NetworkInterfaceId: !Ref 'eniASAInside'
+        - Description: Outside network interface
+          DeviceIndex: 2
+          NetworkInterfaceId: !Ref 'eniASAOutside'
+        - Description: DMZ network interface
+          DeviceIndex: 3
+          NetworkInterfaceId: !Ref 'eniASADmz'
+      UserData: !Base64
+        Fn::Join:
+          - ''
+          - - "! ASA Version 9.4.1.200\n"
+            - "interface management0/0\n"
+            - "management-only\n"
+            - "nameif management\n"
+            - "security-level 100\n"
+            - "ip address dhcp setroute\n"
+            - "no shut\n"
+            - "!\n"
+            - "interface GigabitEthernet0/0\n"
+            - "nameif inside\n"
+            - "security-level 100\n"
+            - "ip address dhcp\n"
+            - "no shut\n"
+            - "!\n"
+            - "interface GigabitEthernet0/1\n"
+            - "nameif outside\n"
+            - "security-level 0\n"
+            - "ip address dhcp\n"
+            - "no shut\n"
+            - "!\n"
+            - "interface GigabitEthernet0/2\n"
+            - "nameif dmz\n"
+            - "security-level 50\n"
+            - "ip address dhcp\n"
+            - "no shut\n"
+            - "!\n"
+            - "same-security-traffic permit inter-interface\n"
+            - "same-security-traffic permit intra-interface\n"
+            - "!\n"
+            - "crypto key generate rsa modulus 2048\n"
+            - "username admin privilege 15\n"
+            - "username admin attributes\n"
+            - "service-type admin\n"
+            - "! required config end\n"
+            - 'hostname '
+            - !Ref 'AsaHostname'
+            - "\n"
+            - "aaa authentication ssh console LOCAL\n"
+            - "telnet timeout 5\n"
+            - "ssh stricthostkeycheck\n"
+            - "ssh 0.0.0.0 0.0.0.0 management\n"
+            - "ssh timeout 30\n"
+            - "ssh key-exchange group dh-group14-sha1\n"
+            - "console timeout 0\n"
+  CiscoASAnoDmz:
+    Condition: NoDmz
+    Type: AWS::EC2::Instance
+    Properties:
+      DisableApiTermination: 'false'
+      InstanceInitiatedShutdownBehavior: stop
+      ImageId: !FindInMap
+        - AWSAMIRegionMap
+        - !Ref 'AWS::Region'
+        - !FindInMap
+          - KeynameMap
+          - !Ref 'AsaVersion'
+          - !Ref 'AsaLicType'
+      InstanceType: !Ref 'AsaInstanceType'
+      KeyName: !Ref 'KeyName'
+      Monitoring: 'false'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref 'AWS::StackName'
+              - -asav
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+      NetworkInterfaces:
+        - Description: Management interface
+          DeviceIndex: 0
+          NetworkInterfaceId: !Ref 'eniASAMgmt'
+        - Description: Inside network interface
+          DeviceIndex: 1
+          NetworkInterfaceId: !Ref 'eniASAInside'
+        - Description: Outside network interface
+          DeviceIndex: 2
+          NetworkInterfaceId: !Ref 'eniASAOutside'
+      UserData: !Base64
+        Fn::Join:
+          - ''
+          - - "! ASA Version 9.4.1.200\n"
+            - "interface management0/0\n"
+            - "management-only\n"
+            - "nameif management\n"
+            - "security-level 100\n"
+            - "ip address dhcp setroute\n"
+            - "no shut\n"
+            - "!\n"
+            - "interface GigabitEthernet0/0\n"
+            - "nameif inside\n"
+            - "security-level 100\n"
+            - "ip address dhcp\n"
+            - "no shut\n"
+            - "!\n"
+            - "interface GigabitEthernet0/1\n"
+            - "nameif outside\n"
+            - "security-level 0\n"
+            - "ip address dhcp\n"
+            - "no shut\n"
+            - "!\n"
+            - "same-security-traffic permit inter-interface\n"
+            - "same-security-traffic permit intra-interface\n"
+            - "!\n"
+            - "crypto key generate rsa modulus 2048\n"
+            - "username admin privilege 15\n"
+            - "username admin attributes\n"
+            - "service-type admin\n"
+            - "! required config end\n"
+            - 'hostname '
+            - !Ref 'AsaHostname'
+            - "\n"
+            - "aaa authentication ssh console LOCAL\n"
+            - "telnet timeout 5\n"
+            - "ssh stricthostkeycheck\n"
+            - "ssh 0.0.0.0 0.0.0.0 management\n"
+            - "ssh timeout 30\n"
+            - "ssh key-exchange group dh-group14-sha1\n"
+            - "console timeout 0\n"
+  sgAllowAll:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all traffic
+      VpcId: !Ref 'VpcName'
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref 'AWS::StackName'
+              - -allow-all
+  sgMgmtInterface:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow only traffic from MgmtExternalAccessCidr IP Ranges
+      VpcId: !Ref 'VpcName'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref 'MgmtExternalAccessCidr'
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: !Ref 'MgmtExternalAccessCidr'
+        - IpProtocol: icmp
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ''
+            - - !Ref 'AWS::StackName'
+              - -allow-SSH
+Outputs:
+  AsaVersion:
+    Description: Version of ASAv Instance created
+    Value: !Ref 'AsaVersion'
+  AsaLicType:
+    Description: License Type of ASAv Instance created
+    Value: !Ref 'AsaLicType'
+  AsaInstanceType:
+    Description: Type of ASAv Instance created
+    Value: !Ref 'AsaInstanceType'
+  AsaAddress:
+    Description: The external address of ASAv instance
+    Value: !Ref 'eipASAMgmt'
